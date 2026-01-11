@@ -156,8 +156,30 @@ if "Friends" in tab_list:
         u_df = pd.read_sql_query("SELECT * FROM users", conn)
         edited_u = st.data_editor(u_df, width='stretch', hide_index=True)
         if st.button("Save User Names"):
-            edited_u.to_sql("users", conn, if_exists="replace", index=False)
-            st.success("User names updated!")
+            # Persist edits while preserving the primary key on `author_id`.
+            # Using pandas.to_sql(..., if_exists='replace') will recreate the table
+            # without the PRIMARY KEY, which lets future INSERTs create duplicate
+            # user rows. Instead, write into a temp table with a PRIMARY KEY and
+            # swap it in atomically.
+            c = conn.cursor()
+            # create a temp table with the desired schema (primary key)
+            c.execute('CREATE TABLE IF NOT EXISTS users_tmp (author_id TEXT PRIMARY KEY, friendly_name TEXT)')
+            c.execute('DELETE FROM users_tmp')
+            for _, row in edited_u.iterrows():
+                aid = row.get('author_id') if 'author_id' in row.index else None
+                name = row.get('friendly_name') if 'friendly_name' in row.index else None
+                if aid is None:
+                    continue
+                # ensure strings and avoid NaN
+                aid = str(aid)
+                name = '' if pd.isna(name) else str(name)
+                c.execute('INSERT OR REPLACE INTO users_tmp (author_id, friendly_name) VALUES (?, ?)', (aid, name))
+
+            # replace the old users table with the deduped one
+            c.execute('DROP TABLE IF EXISTS users')
+            c.execute('ALTER TABLE users_tmp RENAME TO users')
+            conn.commit()
+            st.success('User names updated!')
         conn.close()
 
 # --- TAB: FEED MANAGEMENT ---
